@@ -118,6 +118,15 @@ r uninstall
 | `1.87`    | Latest patch in 1.87.x            |
 | `v1.87.0` | Exact version (no network needed) |
 
+## Related Projects
+
+| Project | Runtime |
+|---------|---------|
+| [n](https://github.com/THernandez03/n) | Node.js version manager |
+| [b](https://github.com/THernandez03/b) | Bun version manager |
+| [z](https://github.com/THernandez03/z) | Zig version manager |
+| [d](https://github.com/THernandez03/d) | Deno version manager |
+
 ## License
 
 MIT
