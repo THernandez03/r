@@ -209,6 +209,172 @@ fn run_installer(src_dir: &Path, prefix: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Remove a cached version, or prompt for interactive selection if no version is given.
+pub fn remove_version(version: Option<String>) -> Result<()> {
+    if let Some(v) = version {
+        cache::remove(&v)?;
+        return Ok(());
+    }
+    let versions = cache::cached_versions()?;
+    if versions.is_empty() {
+        println!("No cached versions to remove.");
+        return Ok(());
+    }
+    let active = symlink::active_version();
+    let items: Vec<String> = versions
+        .iter()
+        .map(|v| {
+            if Some(v.as_str()) == active.as_deref() {
+                format!("{v}  (active)")
+            } else {
+                v.clone()
+            }
+        })
+        .collect();
+    let idx = dialoguer::Select::new()
+        .with_prompt("Select a version to remove")
+        .items(&items)
+        .interact()?;
+    cache::remove(&versions[idx])?;
+    Ok(())
+}
+
+const GITHUB_REPO: &str = "THernandez03/r";
+
+fn self_artifact() -> String {
+    let name = env!("CARGO_PKG_NAME");
+    let os_arch = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "linux-x64"
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        "linux-arm64"
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "darwin-x64"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "darwin-arm64"
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        "windows-x64"
+    } else {
+        "linux-x64"
+    };
+    if cfg!(target_os = "windows") {
+        format!("{name}-{os_arch}.exe")
+    } else {
+        format!("{name}-{os_arch}")
+    }
+}
+
+/// Self-update this version manager binary to the latest GitHub release.
+pub fn update_self() -> Result<()> {
+    let name = env!("CARGO_PKG_NAME");
+    println!("{} Checking for {} updates...", style("◆").cyan(), name);
+    let client = reqwest::blocking::Client::new();
+    let release: serde_json::Value = client
+        .get(&format!(
+            "https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+        ))
+        .header("User-Agent", format!("{name}-version-manager"))
+        .send()
+        .context("Failed to fetch latest release info")?
+        .json()
+        .context("Failed to parse release JSON")?;
+    let tag = release["tag_name"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("No tag_name in GitHub release response"))?;
+    let current = env!("CARGO_PKG_VERSION");
+    let remote = tag.trim_start_matches('v');
+    if remote == current {
+        println!(
+            "{} {} is already up to date ({})",
+            style("✓").green().bold(),
+            name,
+            style(current).cyan().bold()
+        );
+        return Ok(());
+    }
+    println!(
+        "{} Updating {} {} → {}...",
+        style("⬇").cyan(),
+        name,
+        style(current).dim(),
+        style(remote).cyan().bold()
+    );
+    let artifact = self_artifact();
+    let url = format!(
+        "https://github.com/{GITHUB_REPO}/releases/download/{tag}/{artifact}"
+    );
+    let exe = std::env::current_exe().context("Failed to locate current executable")?;
+    let tmp = exe.with_extension("update-tmp");
+    {
+        let mut resp = client
+            .get(&url)
+            .header("User-Agent", format!("{name}-version-manager"))
+            .send()
+            .context("Failed to download update")?;
+        if !resp.status().is_success() {
+            anyhow::bail!("Download failed: HTTP {} for {}", resp.status(), url);
+        }
+        let file = fs::File::create(&tmp).context("Failed to create temp file for update")?;
+        let mut writer = BufWriter::new(file);
+        let mut buf = vec![0u8; 65536];
+        loop {
+            let n = resp.read(&mut buf).context("Read error during download")?;
+            if n == 0 {
+                break;
+            }
+            writer.write_all(&buf[..n]).context("Write error during download")?;
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))
+            .context("Failed to set executable permission")?;
+    }
+    fs::rename(&tmp, &exe).context("Failed to replace current binary")?;
+    println!(
+        "{} {} updated to {}.",
+        style("✓").green().bold(),
+        name,
+        style(remote).cyan().bold()
+    );
+    Ok(())
+}
+
+/// Uninstall this version manager completely (removes cache, prefix directory, and the binary).
+pub fn uninstall_self() -> Result<()> {
+    let name = env!("CARGO_PKG_NAME");
+    let confirmed = dialoguer::Confirm::new()
+        .with_prompt(format!(
+            "This will remove all cached versions and the {name} binary. Continue?"
+        ))
+        .default(false)
+        .interact()?;
+    if !confirmed {
+        println!("Aborted.");
+        return Ok(());
+    }
+    println!("Uninstalling {}...", style(name).cyan().bold());
+    let prefix = symlink::prefix();
+    if prefix.exists() {
+        fs::remove_dir_all(&prefix)
+            .with_context(|| format!("Failed to remove {}", prefix.display()))?;
+        println!("  {} Removed {}", style("✓").green(), prefix.display());
+    }
+    let exe = std::env::current_exe().context("Failed to locate current executable")?;
+    fs::remove_file(&exe)
+        .with_context(|| format!("Failed to remove {}", exe.display()))?;
+    println!("  {} Removed {}", style("✓").green(), exe.display());
+    println!();
+    println!(
+        "{} {} uninstalled. Remove {} from your PATH if needed.",
+        style("✓").green().bold(),
+        name,
+        exe.parent()
+            .map_or_else(String::new, |p| p.display().to_string())
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

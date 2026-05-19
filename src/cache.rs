@@ -35,7 +35,7 @@ pub fn which(tag: &str) -> Result<PathBuf> {
     if path.exists() {
         Ok(path)
     } else {
-        anyhow::bail!("Version '{tag}' is not cached. Run `r install {tag}` first.")
+        anyhow::bail!("Version '{tag}' is not cached. Run `r {tag}` to install it.")
     }
 }
 

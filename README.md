@@ -1,7 +1,5 @@
 # r — Interactively Manage Your Rust Versions
 
-> Inspired by [tj/n](https://github.com/tj/n). Written in Rust.
-
 `r` is a simple, no-fuss Rust version manager. Download, cache, and switch between Rust toolchain versions with a single command. No need to have Rust pre-installed — grab a pre-built binary and bootstrap from there.
 
 ## Features
@@ -16,7 +14,7 @@
 ## Supported Platforms
 
 | OS      | Architectures   |
-|---------|-----------------|
+| ------- | --------------- |
 | Linux   | x86_64, aarch64 |
 | macOS   | x86_64, aarch64 |
 | Windows | x86_64, aarch64 |
@@ -58,19 +56,19 @@ export PATH="$R_PREFIX/bin:$PATH"      # for managed Rust toolchain binaries
 
 Optional environment variables:
 
-| Variable      | Default         | Description                          |
-|---------------|-----------------|--------------------------------------|
-| `R_PREFIX`    | `~/.r`          | Root installation prefix             |
+| Variable      | Default         | Description                            |
+| ------------- | --------------- | -------------------------------------- |
+| `R_PREFIX`    | `~/.r`          | Root installation prefix               |
 | `R_CACHE_DIR` | `~/.r/versions` | Where downloaded toolchains are stored |
 
 ## Usage
 
 ```bash
-# Install a specific version
+# Install and activate a version
 r 1.87.0
-r install stable
-r install nightly
-r install beta
+r stable
+r nightly
+r beta
 
 # Interactive picker from cached versions
 r
@@ -81,8 +79,8 @@ r ls
 # List recent remote versions
 r ls-remote
 
-# Download without activating
-r download 1.87.0
+# Fetch into cache without activating
+r fetch 1.87.0
 
 # Show path to the cached rustc binary
 r which stable
@@ -90,23 +88,27 @@ r which stable
 # Run a specific version's rustc
 r run 1.86.0 -- --version
 
-# Remove a cached version
-r rm 1.86.0
+# Remove a cached version (interactive picker if no version given)
+r remove 1.86.0
+r rm 1.86.0         # alias
 
 # Remove all except active
 r prune
 
-# Diagnostics
-r doctor
+# Show info
+r info
 
-# Uninstall active Rust toolchain symlink
+# Update r itself
+r update
+
+# Fully remove r + all cached versions (requires confirmation)
 r uninstall
 ```
 
 ## Version Aliases
 
 | Alias     | Resolves to                       |
-|-----------|-----------------------------------|
+| --------- | --------------------------------- |
 | `stable`  | Latest stable release             |
 | `latest`  | Same as `stable`                  |
 | `lts`     | Same as `stable`                  |
@@ -120,12 +122,12 @@ r uninstall
 
 ## Related Projects
 
-| Project | Runtime |
-|---------|---------|
+| Project                                | Runtime                 |
+| -------------------------------------- | ----------------------- |
 | [n](https://github.com/THernandez03/n) | Node.js version manager |
-| [b](https://github.com/THernandez03/b) | Bun version manager |
-| [z](https://github.com/THernandez03/z) | Zig version manager |
-| [d](https://github.com/THernandez03/d) | Deno version manager |
+| [b](https://github.com/THernandez03/b) | Bun version manager     |
+| [z](https://github.com/THernandez03/z) | Zig version manager     |
+| [d](https://github.com/THernandez03/d) | Deno version manager    |
 
 ## License
 

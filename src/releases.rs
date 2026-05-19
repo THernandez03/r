@@ -76,15 +76,15 @@ pub fn list_remote() -> Result<()> {
 /// Resolve a user-supplied version string to a cache tag.
 ///
 /// Aliases:
-/// - `"nightly"` / `"canary"` / `"next"` / `"edge"` → `"nightly-YYYY-MM-DD"` (fetches manifest)
+/// - `"nightly"` / `"canary"` / `"next"` / `"edge"` / `"latest"` → `"nightly-YYYY-MM-DD"` (fetches manifest)
 /// - `"beta"` → `"beta"`
-/// - `"stable"` / `"latest"` / `"lts"` / `""` → latest stable from GitHub
+/// - `"stable"` / `"lts"` / `""` → latest stable from GitHub
 /// - `"1.87"` / `"v1.87"` → latest in that minor line (GitHub)
 /// - `"1.87.0"` / `"v1.87.0"` → exact tag — no network needed
 pub fn resolve_tag(version_str: &str) -> Result<String> {
     let v = version_str.trim();
 
-    if matches!(v, "nightly" | "canary" | "next" | "edge") {
+    if matches!(v, "nightly" | "canary" | "next" | "edge" | "latest") {
         return resolve_nightly_tag();
     }
 
@@ -107,7 +107,7 @@ pub fn resolve_tag(version_str: &str) -> Result<String> {
 pub fn resolve_from(version_str: &str, releases: &[GhRelease]) -> Result<String> {
     let v = version_str.trim();
 
-    if matches!(v, "nightly" | "canary" | "next" | "edge") {
+    if matches!(v, "nightly" | "canary" | "next" | "edge" | "latest") {
         return Ok("nightly".to_string());
     }
 
@@ -118,7 +118,7 @@ pub fn resolve_from(version_str: &str, releases: &[GhRelease]) -> Result<String>
     let bare = v.strip_prefix('v').unwrap_or(v);
 
     // Latest stable / lts aliases
-    if bare.is_empty() || matches!(bare, "stable" | "latest" | "lts") {
+    if bare.is_empty() || matches!(bare, "stable" | "lts") {
         return releases
             .iter()
             .find(|r| !r.prerelease)
@@ -171,10 +171,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_latest_returns_first_stable() {
+    fn resolve_latest_returns_nightly() {
         assert_eq!(
             resolve_from("latest", &stable_releases()).unwrap(),
-            "1.87.0"
+            "nightly"
         );
     }
 
