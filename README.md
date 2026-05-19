@@ -120,6 +120,12 @@ r uninstall
 | `1.87`    | Latest patch in 1.87.x            |
 | `v1.87.0` | Exact version (no network needed) |
 
+## How It Works
+
+`r` downloads prebuilt Rust toolchains from [static.rust-lang.org](https://static.rust-lang.org/), caches them under `~/.r/versions/<version>/`, and creates symlinks at `~/.r/bin/` exposing `rustc`, `cargo`, `rustfmt`, `clippy`, and `rustdoc` from the selected toolchain.
+
+No subshells. No profile setup. Just symlinks.
+
 ## Related Projects
 
 | Project                                | Runtime                 |
