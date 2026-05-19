@@ -3,8 +3,7 @@ use reqwest::blocking::Client;
 use serde::Deserialize;
 
 const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/rust-lang/rust/releases";
-const NIGHTLY_MANIFEST_URL: &str =
-    "https://static.rust-lang.org/dist/channel-rust-nightly.toml";
+const NIGHTLY_MANIFEST_URL: &str = "https://static.rust-lang.org/dist/channel-rust-nightly.toml";
 const BETA_MANIFEST_URL: &str = "https://static.rust-lang.org/dist/channel-rust-beta.toml";
 
 #[derive(Debug, Deserialize, Clone)]
@@ -133,10 +132,7 @@ pub fn resolve_from(version_str: &str, releases: &[GhRelease]) -> Result<String>
     let needle = format!("{prefix}.");
     releases
         .iter()
-        .find(|r| {
-            !r.prerelease
-                && (r.tag_name.starts_with(&needle) || r.tag_name == prefix)
-        })
+        .find(|r| !r.prerelease && (r.tag_name.starts_with(&needle) || r.tag_name == prefix))
         .map(|r| r.tag_name.clone())
         .ok_or_else(|| anyhow::anyhow!("No stable Rust release found matching '{version_str}'"))
 }
@@ -180,20 +176,23 @@ mod tests {
 
     #[test]
     fn resolve_lts_returns_first_stable() {
-        assert_eq!(
-            resolve_from("lts", &stable_releases()).unwrap(),
-            "1.87.0"
-        );
+        assert_eq!(resolve_from("lts", &stable_releases()).unwrap(), "1.87.0");
     }
 
     #[test]
     fn resolve_nightly_alias() {
-        assert_eq!(resolve_from("nightly", &stable_releases()).unwrap(), "nightly");
+        assert_eq!(
+            resolve_from("nightly", &stable_releases()).unwrap(),
+            "nightly"
+        );
     }
 
     #[test]
     fn resolve_canary_alias() {
-        assert_eq!(resolve_from("canary", &stable_releases()).unwrap(), "nightly");
+        assert_eq!(
+            resolve_from("canary", &stable_releases()).unwrap(),
+            "nightly"
+        );
     }
 
     #[test]
