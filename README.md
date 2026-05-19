@@ -54,6 +54,13 @@ export PATH="$HOME/.local/bin:$PATH"   # for the r binary
 export PATH="$R_PREFIX/bin:$PATH"      # for managed Rust toolchain binaries
 ```
 
+> [!IMPORTANT]
+> zsh defines a built-in alias `r` for `fc -e -` (history re-execution). Add `disable r` **after** your PATH exports so the `r` binary takes precedence:
+>
+> ```zsh
+> disable r
+> ```
+
 Optional environment variables:
 
 | Variable      | Default         | Description                            |
