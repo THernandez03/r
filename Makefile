@@ -9,7 +9,7 @@ lint:
 	cargo clippy --all-targets -- -W clippy::all -W clippy::pedantic -W clippy::nursery
 
 test:
-	cargo test
+	cargo test -- --test-threads=1
 
 build:
 	cargo build --release
