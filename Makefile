@@ -6,7 +6,7 @@ fmt:
 	cargo fmt
 
 lint:
-	cargo clippy --all-targets -- -W clippy::all -W clippy::pedantic -W clippy::nursery
+	cargo clippy --all-targets --all-features -- -D warnings -D clippy::all -D clippy::pedantic -D clippy::nursery -D clippy::cargo -A clippy::multiple_crate_versions
 
 test:
 	cargo test -- --test-threads=1

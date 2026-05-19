@@ -168,7 +168,7 @@ fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<()> {
 fn find_single_dir(dir: &Path) -> Result<std::path::PathBuf> {
     let dirs: Vec<_> = fs::read_dir(dir)
         .context("Failed to read extract directory")?
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .filter(|e| e.path().is_dir())
         .collect();
     anyhow::ensure!(
