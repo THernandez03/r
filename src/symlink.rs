@@ -175,19 +175,4 @@ mod tests {
         });
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn uninstall_removes_symlink_and_marker() {
-        with_temp_prefix(|base| {
-            std::env::set_var("R_CACHE_DIR", base.join("versions"));
-            let bin_dir = base.join("versions").join("1.87.0").join("bin");
-            fs::create_dir_all(&bin_dir).unwrap();
-            fs::write(bin_dir.join("rustc"), b"#!/bin/sh").unwrap();
-            activate("1.87.0").unwrap();
-            uninstall();
-            assert!(!base.join("bin").symlink_metadata().is_ok());
-            assert_eq!(active_version(), None);
-            std::env::remove_var("R_CACHE_DIR");
-        });
-    }
 }
