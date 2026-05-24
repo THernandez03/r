@@ -485,7 +485,9 @@ pub fn update_self() -> Result<()> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("No tag_name in GitHub release response"))?;
     let current = env!("CARGO_PKG_VERSION");
-    let remote = tag.trim_start_matches('v');
+    let remote = tag
+        .trim_start_matches(&format!("{name}-v"))
+        .trim_start_matches('v');
     if remote == current {
         println!(
             "{} {} is already up to date ({})",
