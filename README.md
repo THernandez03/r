@@ -102,6 +102,9 @@ r rm 1.86.0         # alias
 # Remove all except active
 r prune
 
+# Also remove the active version
+r prune --force
+
 # Show info
 r info
 
@@ -110,6 +113,7 @@ r update
 
 # Fully remove r + all cached versions (requires confirmation)
 r uninstall
+r uninstall --yes   # skip confirmation prompt
 ```
 
 ## Version Aliases

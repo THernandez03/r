@@ -93,7 +93,8 @@ enum Commands {
     Info,
     /// Update r to the latest available version
     Update,
-    /// Uninstall r completely (removes cached versions, prefix, and the r binary)
+    /// Uninstall r completely (removes cached versions, prefix, and the r binary).
+    /// Use `--yes`/`-y` to skip the confirmation prompt.
     Uninstall {
         /// Skip the confirmation prompt.
         #[arg(short, long)]
