@@ -20,6 +20,7 @@ jobs:
         id: release
         with:
           release-type: rust
+          pull-request-title-pattern: "release: 🔖 ${version}"
 
   build:
     name: Build (${{ matrix.target }})
