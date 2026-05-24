@@ -8,86 +8,278 @@ use console::style;
 
 use crate::{arch, cache, releases, symlink};
 
-/// Install a Rust toolchain and activate it.
-pub fn install(version_str: &str) -> Result<()> {
-    let tag = releases::resolve_tag(version_str)?;
+/// Returns `true` if the input is a symbolic alias resolved entirely via network.
+fn is_alias(s: &str) -> bool {
+    matches!(
+        s,
+        "lts" | "stable" | "current" | "latest" | "canary" | "nightly" | "next" | "edge" | "beta"
+    )
+}
 
-    if symlink::active_version().as_deref() == Some(&tag) {
+/// Returns `true` if the input looks like a bare version number.
+fn looks_like_version(s: &str) -> bool {
+    s.starts_with(|c: char| c.is_ascii_digit())
+        && s.chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | 'x' | 'X'))
+}
+
+/// Returns `true` if the input looks like a git commit SHA (7-40 hex chars
+/// with at least one letter `a`-`f`).
+fn is_sha_input(s: &str) -> bool {
+    let n = s.len();
+    (7..=40).contains(&n)
+        && s.chars().all(|c| c.is_ascii_hexdigit())
+        && s.chars().any(|c| matches!(c, 'a'..='f' | 'A'..='F'))
+}
+
+/// Extract the base version (before any `+sha`) and the optional SHA from a
+/// resolved tag. Channel suffixes like `-nightly`, `-beta.3` are stripped at
+/// the first `-`.
+fn extract_ver_sha(tag: &str) -> (String, Option<&str>) {
+    let (ver_part, sha) = tag
+        .split_once('+')
+        .map_or((tag, None), |(v, s)| (v, Some(s)));
+    let clean_ver = ver_part.split('-').next().unwrap_or(ver_part).to_string();
+    (clean_ver, sha)
+}
+
+/// Query the installed rustc binary to determine the canonical cache key.
+///
+/// `rustc 1.87.0 (17067e9ac 2025-01-13)` → `("1.87.0", Some("17067e9ac"))`\
+/// `rustc 1.90.0-nightly (abc1234de ...)` → `("1.90.0", Some("abc1234de"))`
+fn query_binary_version(binary_path: &Path) -> Result<(String, Option<String>)> {
+    let out = Command::new(binary_path)
+        .arg("--version")
+        .output()
+        .context("Failed to run rustc --version")?;
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let line = raw.trim();
+    // "rustc 1.87.0 (17067e9ac 2025-01-13)"
+    let rest = line.strip_prefix("rustc ").unwrap_or(line);
+    let ver_part = rest.split_whitespace().next().unwrap_or("");
+    // Strip channel suffix: "1.90.0-nightly" → "1.90.0", "1.88.0-beta.3" → "1.88.0"
+    let clean_ver = ver_part.split('-').next().unwrap_or(ver_part).to_string();
+    // Extract SHA from the parenthesised portion: "(17067e9ac 2025-01-13)"
+    let sha_opt = rest
+        .find('(')
+        .and_then(|pos| {
+            rest[pos + 1..]
+                .split_whitespace()
+                .next()
+                .map(str::to_string)
+        })
+        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(|s| s[..s.len().min(9)].to_string());
+    Ok((clean_ver, sha_opt))
+}
+
+/// Activate an already-cached version (update the symlink).
+fn activate_cached(tag: &str) -> Result<()> {
+    if symlink::active_version().as_deref() == Some(tag) {
         println!(
             "{} Rust {} is already the active version.",
-            style("✓").green().bold(),
-            style(&tag).cyan().bold(),
+            style("\u{2713}").green().bold(),
+            style(tag).cyan().bold(),
         );
         return Ok(());
     }
+    let from = symlink::active_version();
+    match &from {
+        Some(f) => println!(
+            "{} Activating Rust {} \u{2192} {}...",
+            style("\u{25c6}").magenta(),
+            style(f).cyan().bold(),
+            style(tag).cyan().bold(),
+        ),
+        None => println!(
+            "{} Activating Rust {}...",
+            style("\u{25c6}").magenta(),
+            style(tag).cyan().bold(),
+        ),
+    }
+    symlink::activate(tag)?;
+    println!(
+        "{} Installed Rust {} successfully.",
+        style("\u{2713}").green().bold(),
+        style(tag).cyan().bold(),
+    );
+    Ok(())
+}
 
-    if cache::is_cached(&tag) {
-        println!(
-            "{} Rust {} is already cached.",
-            style("◆").dim(),
-            style(&tag).cyan(),
-        );
-    } else {
+/// Install a Rust toolchain and activate it.
+pub fn install(version_str: &str) -> Result<()> {
+    let v = version_str.trim();
+
+    // 1. Pre-resolve cache check — skip network for version/SHA inputs
+    if !is_alias(v) {
+        if is_sha_input(v) {
+            if let Some(cached) = cache::find_by_sha(v) {
+                return activate_cached(&cached);
+            }
+        } else if looks_like_version(v) {
+            let prefix = v.trim_end_matches(".x").trim_end_matches(".X");
+            if let Some(cached) = cache::find_by_version_prefix(prefix) {
+                return activate_cached(&cached);
+            }
+        }
+    }
+
+    // 2. Resolve via network
+    let tag = releases::resolve_tag(v)?;
+
+    // 3. Post-resolve cache check
+    {
+        let (ver_prefix, tag_sha) = extract_ver_sha(&tag);
+        if let Some(cached) = cache::find_by_version_prefix(&ver_prefix) {
+            let sha_ok = match (tag_sha, cache::cache_key_sha(&cached)) {
+                (Some(ts), Some(cs)) => cache::sha_matches(cs, ts),
+                (None, _) => true,
+                (Some(_), None) => false,
+            };
+            if sha_ok {
+                return activate_cached(&cached);
+            }
+        }
+    }
+
+    // 4. Download if not already cached
+    if !cache::is_cached(&tag) {
         println!(
             "{} Downloading Rust {}...",
-            style("⬇").cyan(),
+            style("\u{2b07}").cyan(),
             style(&tag).cyan().bold(),
         );
         let url = arch::download_url(&tag);
         download_version(&url, &tag)?;
     }
 
-    let from = symlink::active_version();
-    match &from {
-        Some(f) => println!(
-            "{} Activating Rust {} \u{2192} {}...",
-            style("◆").magenta(),
-            style(f).cyan().bold(),
-            style(&tag).cyan().bold(),
-        ),
-        None => println!(
-            "{} Activating Rust {}...",
-            style("◆").magenta(),
-            style(&tag).cyan().bold(),
-        ),
+    // 5. Query the installed binary to get the canonical cache key
+    let binary = cache::rustc_binary(&tag);
+    let canonical = match query_binary_version(&binary) {
+        Ok((ver, sha_opt)) => sha_opt.map_or_else(|| ver.clone(), |s| format!("{ver}+{s}")),
+        Err(_) => tag.clone(),
+    };
+    if canonical != tag {
+        cache::rename_version(&tag, &canonical)?;
     }
-    symlink::activate(&tag)?;
-    println!(
-        "{} Installed Rust {} successfully.",
-        style("✓").green().bold(),
-        style(&tag).cyan().bold(),
-    );
-    Ok(())
+
+    activate_cached(&canonical)
 }
 
 /// Download a version into cache without activating it.
 pub fn download_only(version_str: &str) -> Result<()> {
-    let tag = releases::resolve_tag(version_str)?;
+    let v = version_str.trim();
+
+    // Pre-resolve cache check
+    if !is_alias(v) {
+        if is_sha_input(v) {
+            if let Some(cached) = cache::find_by_sha(v) {
+                println!("Version {cached} is already cached.");
+                return Ok(());
+            }
+        } else if looks_like_version(v) {
+            let prefix = v.trim_end_matches(".x").trim_end_matches(".X");
+            if let Some(cached) = cache::find_by_version_prefix(prefix) {
+                println!("Version {cached} is already cached.");
+                return Ok(());
+            }
+        }
+    }
+
+    let tag = releases::resolve_tag(v)?;
+
+    // Post-resolve cache check
+    {
+        let (ver_prefix, tag_sha) = extract_ver_sha(&tag);
+        if let Some(cached) = cache::find_by_version_prefix(&ver_prefix) {
+            let sha_ok = match (tag_sha, cache::cache_key_sha(&cached)) {
+                (Some(ts), Some(cs)) => cache::sha_matches(cs, ts),
+                (None, _) => true,
+                (Some(_), None) => false,
+            };
+            if sha_ok {
+                println!("Version {cached} is already cached.");
+                return Ok(());
+            }
+        }
+    }
+
     if cache::is_cached(&tag) {
         println!("Version {tag} is already cached.");
         return Ok(());
     }
     println!("Downloading Rust {tag}...");
     let url = arch::download_url(&tag);
-    download_version(&url, &tag)
+    download_version(&url, &tag)?;
+    let binary = cache::rustc_binary(&tag);
+    if let Ok((ver, sha_opt)) = query_binary_version(&binary) {
+        let canonical = sha_opt.map_or_else(|| ver.clone(), |s| format!("{ver}+{s}"));
+        if canonical != tag {
+            cache::rename_version(&tag, &canonical)?;
+        }
+    }
+    Ok(())
 }
 
 /// Run a specific cached Rust version's `rustc` with given arguments.
 pub fn run(version_str: &str, args: &[String]) -> Result<()> {
-    let tag = releases::resolve_tag(version_str)?;
+    let v = version_str.trim();
 
-    if !cache::is_cached(&tag) {
-        println!("Version {tag} is not cached. Downloading...");
-        let url = arch::download_url(&tag);
-        download_version(&url, &tag)?;
+    // Pre-resolve cache check
+    if !is_alias(v) {
+        if is_sha_input(v) {
+            if let Some(cached) = cache::find_by_sha(v) {
+                return run_cached(&cached, args);
+            }
+        } else if looks_like_version(v) {
+            let prefix = v.trim_end_matches(".x").trim_end_matches(".X");
+            if let Some(cached) = cache::find_by_version_prefix(prefix) {
+                return run_cached(&cached, args);
+            }
+        }
     }
 
-    let binary = cache::rustc_binary(&tag);
+    let tag = releases::resolve_tag(v)?;
+
+    // Post-resolve cache check
+    let resolved_tag = {
+        let (ver_prefix, tag_sha) = extract_ver_sha(&tag);
+        if let Some(cached) = cache::find_by_version_prefix(&ver_prefix) {
+            let sha_ok = match (tag_sha, cache::cache_key_sha(&cached)) {
+                (Some(ts), Some(cs)) => cache::sha_matches(cs, ts),
+                (None, _) => true,
+                (Some(_), None) => false,
+            };
+            if sha_ok {
+                return run_cached(&cached, args);
+            }
+        }
+        tag
+    };
+
+    if !cache::is_cached(&resolved_tag) {
+        println!("Version {resolved_tag} is not cached. Downloading...");
+        let url = arch::download_url(&resolved_tag);
+        download_version(&url, &resolved_tag)?;
+    }
+
+    let binary = cache::rustc_binary(&resolved_tag);
+    let canonical = match query_binary_version(&binary) {
+        Ok((ver, sha_opt)) => sha_opt.map_or_else(|| ver.clone(), |s| format!("{ver}+{s}")),
+        Err(_) => resolved_tag.clone(),
+    };
+    if canonical != resolved_tag {
+        cache::rename_version(&resolved_tag, &canonical)?;
+    }
+    run_cached(&canonical, args)
+}
+
+fn run_cached(tag: &str, args: &[String]) -> Result<()> {
+    let binary = cache::rustc_binary(tag);
     let status = Command::new(&binary)
         .args(args)
         .status()
         .with_context(|| format!("Failed to run rustc {tag}"))?;
-
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
     }
@@ -212,7 +404,19 @@ fn run_installer(src_dir: &Path, prefix: &Path) -> Result<()> {
 /// Remove a cached version, or prompt for interactive selection if no version is given.
 pub fn remove_version(version: Option<String>) -> Result<()> {
     if let Some(v) = version {
-        cache::remove(&v)?;
+        if cache::is_cached(&v) {
+            cache::remove(&v)?;
+        } else if is_sha_input(&v) {
+            if let Some(matched) = cache::find_by_sha(&v) {
+                cache::remove(&matched)?;
+            } else {
+                println!("Version '{v}' is not cached.");
+            }
+        } else if let Some(matched) = cache::find_by_version_prefix(&v) {
+            cache::remove(&matched)?;
+        } else {
+            println!("Version '{v}' is not cached.");
+        }
         return Ok(());
     }
     let versions = cache::cached_versions()?;
@@ -341,17 +545,19 @@ pub fn update_self() -> Result<()> {
 }
 
 /// Uninstall this version manager completely (removes cache, prefix directory, and the binary).
-pub fn uninstall_self() -> Result<()> {
+pub fn uninstall_self(yes: bool) -> Result<()> {
     let name = env!("CARGO_PKG_NAME");
-    let confirmed = dialoguer::Confirm::new()
-        .with_prompt(format!(
-            "This will remove all cached versions and the {name} binary. Continue?"
-        ))
-        .default(false)
-        .interact()?;
-    if !confirmed {
-        println!("{}", style("Aborted.").yellow());
-        return Ok(());
+    if !yes {
+        let confirmed = dialoguer::Confirm::new()
+            .with_prompt(format!(
+                "This will remove all cached versions and the {name} binary. Continue?"
+            ))
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            println!("{}", style("Aborted.").yellow());
+            return Ok(());
+        }
     }
     println!("Uninstalling {}...", style(name).cyan().bold());
     let prefix = symlink::prefix();
@@ -463,5 +669,108 @@ mod tests {
                 "should skip download when cached: {result:?}"
             );
         });
+    }
+
+    // ── is_alias ───────────────────────────────────────────────────
+
+    #[test]
+    fn is_alias_known_aliases() {
+        assert!(is_alias("lts"));
+        assert!(is_alias("stable"));
+        assert!(is_alias("current"));
+        assert!(is_alias("latest"));
+        assert!(is_alias("canary"));
+        assert!(is_alias("nightly"));
+        assert!(is_alias("next"));
+        assert!(is_alias("edge"));
+        assert!(is_alias("beta"));
+    }
+
+    #[test]
+    fn is_alias_version_not_alias() {
+        assert!(!is_alias("1.87.0"));
+        assert!(!is_alias("17067e9ac"));
+        assert!(!is_alias(""));
+    }
+
+    // ── looks_like_version ──────────────────────────────────────────
+
+    #[test]
+    fn looks_like_version_semver() {
+        assert!(looks_like_version("1.87.0"));
+        assert!(looks_like_version("1.86.0"));
+    }
+
+    #[test]
+    fn looks_like_version_x_notation() {
+        assert!(looks_like_version("1.x"));
+        assert!(looks_like_version("1.87.X"));
+    }
+
+    #[test]
+    fn looks_like_version_non_versions() {
+        assert!(!looks_like_version("stable"));
+        assert!(!looks_like_version("v1.2.3"));
+        assert!(!looks_like_version("17067e9ac"));
+    }
+
+    // ── is_sha_input ───────────────────────────────────────────────
+
+    #[test]
+    fn is_sha_input_valid() {
+        assert!(is_sha_input("17067e9ac"));
+        assert!(is_sha_input("abc1234def5678"));
+    }
+
+    #[test]
+    fn is_sha_input_too_short() {
+        assert!(!is_sha_input("abc123"));
+    }
+
+    #[test]
+    fn is_sha_input_all_digits_rejected() {
+        assert!(!is_sha_input("12345678"));
+    }
+
+    #[test]
+    fn is_sha_input_non_hex_rejected() {
+        assert!(!is_sha_input("abc1234g"));
+    }
+
+    // ── extract_ver_sha ─────────────────────────────────────────────
+
+    #[test]
+    fn extract_ver_sha_with_sha() {
+        let (ver, sha) = extract_ver_sha("1.87.0+17067e9ac");
+        assert_eq!(ver, "1.87.0");
+        assert_eq!(sha, Some("17067e9ac"));
+    }
+
+    #[test]
+    fn extract_ver_sha_without_sha() {
+        let (ver, sha) = extract_ver_sha("1.87.0");
+        assert_eq!(ver, "1.87.0");
+        assert!(sha.is_none());
+    }
+
+    #[test]
+    fn extract_ver_sha_strips_nightly_suffix() {
+        let (ver, sha) = extract_ver_sha("1.90.0-nightly+17067e9ac");
+        assert_eq!(ver, "1.90.0");
+        assert_eq!(sha, Some("17067e9ac"));
+    }
+
+    #[test]
+    fn extract_ver_sha_nightly_no_sha() {
+        let (ver, sha) = extract_ver_sha("1.90.0-nightly");
+        assert_eq!(ver, "1.90.0");
+        assert!(sha.is_none());
+    }
+
+    #[test]
+    fn extract_ver_sha_strips_beta_suffix() {
+        let (ver, sha) = extract_ver_sha("1.90.0-beta.3+17067e9ac");
+        assert_eq!(ver, "1.90.0");
+        assert_eq!(sha, Some("17067e9ac"));
     }
 }

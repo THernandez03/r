@@ -35,18 +35,20 @@ pub const fn target() -> &'static str {
 /// Build the download URL for a specific Rust toolchain tag.
 ///
 /// Tags encode the channel:
-/// - `"nightly-YYYY-MM-DD"` → `https://static.rust-lang.org/dist/rust-nightly-{target}.tar.gz`
-/// - `"beta"` → `https://static.rust-lang.org/dist/rust-beta-{target}.tar.gz`
-/// - `"1.87.0"` → `https://static.rust-lang.org/dist/rust-1.87.0-{target}.tar.gz`
+/// - `"nightly-YYYY-MM-DD"` or `"X.Y.Z-nightly+sha"` → `rust-nightly-{target}.tar.gz`
+/// - `"beta"` or `"X.Y.Z-beta.N+sha"` → `rust-beta-{target}.tar.gz`
+/// - `"1.87.0"` → `rust-1.87.0-{target}.tar.gz`
 #[must_use]
 pub fn download_url(tag: &str) -> String {
     let tgt = target();
-    if tag.starts_with("nightly") {
+    if tag.starts_with("nightly") || tag.contains("-nightly") {
         format!("https://static.rust-lang.org/dist/rust-nightly-{tgt}.tar.gz")
-    } else if tag.starts_with("beta") {
+    } else if tag.starts_with("beta") || tag.contains("-beta") {
         format!("https://static.rust-lang.org/dist/rust-beta-{tgt}.tar.gz")
     } else {
-        format!("https://static.rust-lang.org/dist/rust-{tag}-{tgt}.tar.gz")
+        // Strip any "+sha" suffix for stable download URLs
+        let ver = tag.split_once('+').map_or(tag, |(v, _)| v);
+        format!("https://static.rust-lang.org/dist/rust-{ver}-{tgt}.tar.gz")
     }
 }
 
@@ -109,9 +111,31 @@ mod tests {
     }
 
     #[test]
+    fn download_url_nightly_version_tag_uses_nightly_slug() {
+        // New tag format: "1.90.0-nightly+abc1234de"
+        let url = download_url("1.90.0-nightly+abc1234de");
+        assert!(url.contains("rust-nightly-"), "url: {url}");
+        assert!(
+            !url.contains("1.90.0"),
+            "url should not embed version: {url}"
+        );
+    }
+
+    #[test]
     fn download_url_beta_uses_beta_slug() {
         let url = download_url("beta");
         assert!(url.contains("rust-beta-"), "url: {url}");
+    }
+
+    #[test]
+    fn download_url_beta_version_tag_uses_beta_slug() {
+        // New tag format: "1.88.0-beta.3+def5678ab"
+        let url = download_url("1.88.0-beta.3+def5678ab");
+        assert!(url.contains("rust-beta-"), "url: {url}");
+        assert!(
+            !url.contains("1.88.0"),
+            "url should not embed version: {url}"
+        );
     }
 
     #[test]

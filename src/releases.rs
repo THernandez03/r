@@ -12,9 +12,49 @@ pub struct GhRelease {
     pub prerelease: bool,
 }
 
-/// Fetch the current nightly date from the channel manifest and return a
-/// stable cache key like `"nightly-2024-11-15"`. The download URL always uses
-/// `rust-nightly-{target}.tar.gz` regardless of the date embedded in the key.
+/// Parse the `version = "X.Y.Z-channel (sha date)"` entry from the `[pkg.rust]`
+/// section of a Rust channel manifest (TOML text) and return `(version_part, sha)`.
+///
+/// For nightly: `version_part = "1.90.0-nightly"`, `sha = "abc1234de"`
+/// For beta:    `version_part = "1.88.0-beta.3"`,  `sha = "def5678ab"`
+fn parse_version_sha_from_manifest(body: &str) -> Option<(String, String)> {
+    let mut in_pkg_rust = false;
+    for line in body.lines() {
+        let line = line.trim();
+        // Enter [pkg.rust] section
+        if line == "[pkg.rust]" {
+            in_pkg_rust = true;
+            continue;
+        }
+        // Leave [pkg.rust] when the next section header starts
+        if in_pkg_rust && line.starts_with('[') {
+            break;
+        }
+        if !in_pkg_rust {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("version = \"") {
+            if let Some(ver_str) = rest.strip_suffix('"') {
+                // ver_str = "1.90.0-nightly (abc1234de 2025-02-01)"
+                if let Some(paren_pos) = ver_str.find(" (") {
+                    let version_part = &ver_str[..paren_pos];
+                    let paren_content = &ver_str[paren_pos + 2..];
+                    if let Some(sha) = paren_content.split_whitespace().next() {
+                        let sha = sha.trim_end_matches(')');
+                        if !sha.is_empty() && sha.chars().all(|c| c.is_ascii_hexdigit()) {
+                            return Some((version_part.to_string(), sha.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Fetch the current nightly version and commit hash from the channel manifest
+/// and return a cache key like `"1.90.0-nightly+abc1234de"`. The download URL
+/// is selected by detecting `"-nightly"` in the tag (see `arch.rs`).
 fn resolve_nightly_tag() -> Result<String> {
     let client = Client::new();
     let body = client
@@ -25,26 +65,39 @@ fn resolve_nightly_tag() -> Result<String> {
         .text()
         .context("Failed to read nightly manifest body")?;
 
-    let date = body
-        .lines()
-        .find_map(|line| line.strip_prefix("date = \"")?.strip_suffix('"'))
-        .ok_or_else(|| anyhow::anyhow!("Could not parse date from nightly manifest"))?;
+    let (version_part, sha) = parse_version_sha_from_manifest(&body)
+        .ok_or_else(|| anyhow::anyhow!("Could not parse version from Rust nightly manifest"))?;
 
-    anyhow::ensure!(!date.is_empty(), "Nightly manifest date was empty");
-    Ok(format!("nightly-{date}"))
+    anyhow::ensure!(
+        !version_part.is_empty() && !sha.is_empty(),
+        "Empty version or SHA in Rust nightly manifest"
+    );
+    let short_sha = &sha[..sha.len().min(9)];
+    Ok(format!("{version_part}+{short_sha}"))
 }
 
-/// Return `"beta"` as the canonical cache key for the current beta toolchain.
+/// Fetch the current beta version and commit hash from the channel manifest
+/// and return a cache key like `"1.88.0-beta.3+def5678ab"`. The download URL
+/// is selected by detecting `"-beta"` in the tag (see `arch.rs`).
 fn resolve_beta_tag() -> Result<String> {
-    // Validate the manifest is reachable so we fail fast on network errors,
-    // but the tag itself is always "beta" (the URL uses rust-beta-{target}).
     let client = Client::new();
-    client
+    let body = client
         .get(BETA_MANIFEST_URL)
         .header("User-Agent", "r-rust-version-manager")
         .send()
-        .context("Failed to reach Rust beta manifest")?;
-    Ok("beta".to_string())
+        .context("Failed to fetch Rust beta manifest")?
+        .text()
+        .context("Failed to read beta manifest body")?;
+
+    let (version_part, sha) = parse_version_sha_from_manifest(&body)
+        .ok_or_else(|| anyhow::anyhow!("Could not parse version from Rust beta manifest"))?;
+
+    anyhow::ensure!(
+        !version_part.is_empty() && !sha.is_empty(),
+        "Empty version or SHA in Rust beta manifest"
+    );
+    let short_sha = &sha[..sha.len().min(9)];
+    Ok(format!("{version_part}+{short_sha}"))
 }
 
 /// Fetch recent releases from the GitHub API.
@@ -75,13 +128,18 @@ pub fn list_remote() -> Result<()> {
 /// Resolve a user-supplied version string to a cache tag.
 ///
 /// Aliases:
-/// - `"nightly"` / `"canary"` / `"next"` / `"edge"` / `"latest"` → `"nightly-YYYY-MM-DD"` (fetches manifest)
-/// - `"beta"` → `"beta"`
-/// - `"stable"` / `"lts"` / `""` → latest stable from GitHub
-/// - `"1.87"` / `"v1.87"` → latest in that minor line (GitHub)
-/// - `"1.87.0"` / `"v1.87.0"` → exact tag — no network needed
+/// - `"nightly"` / `"canary"` / `"next"` / `"edge"` / `"latest"` → `"X.Y.Z-nightly+sha"` (fetches manifest)
+/// - `"beta"` → `"X.Y.Z-beta.N+sha"` (fetches manifest)
+/// - `"stable"` / `"lts"` / `"current"` / `""` → latest stable from GitHub
+/// - `"1.87"` → latest in that minor line (GitHub)
+/// - `"1.87.0"` → exact tag — no network needed
 pub fn resolve_tag(version_str: &str) -> Result<String> {
     let v = version_str.trim();
+
+    // Reject v-prefixed version strings
+    if v.starts_with('v') && v[1..].starts_with(|c: char| c.is_ascii_digit()) {
+        anyhow::bail!("No Rust release found matching '{v}'");
+    }
 
     if matches!(v, "nightly" | "canary" | "next" | "edge" | "latest") {
         return resolve_nightly_tag();
@@ -91,11 +149,9 @@ pub fn resolve_tag(version_str: &str) -> Result<String> {
         return resolve_beta_tag();
     }
 
-    let bare = v.strip_prefix('v').unwrap_or(v);
-
     // Three-part exact version — skip network
-    if bare.split('.').count() == 3 && bare.chars().all(|c| c.is_ascii_digit() || c == '.') {
-        return Ok(bare.to_string());
+    if v.split('.').count() == 3 && v.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return Ok(v.to_string());
     }
 
     let releases = fetch_releases(100)?;
@@ -106,6 +162,11 @@ pub fn resolve_tag(version_str: &str) -> Result<String> {
 pub fn resolve_from(version_str: &str, releases: &[GhRelease]) -> Result<String> {
     let v = version_str.trim();
 
+    // Reject v-prefixed version strings
+    if v.starts_with('v') && v[1..].starts_with(|c: char| c.is_ascii_digit()) {
+        anyhow::bail!("No Rust release found matching '{v}'");
+    }
+
     if matches!(v, "nightly" | "canary" | "next" | "edge" | "latest") {
         return Ok("nightly".to_string());
     }
@@ -114,10 +175,8 @@ pub fn resolve_from(version_str: &str, releases: &[GhRelease]) -> Result<String>
         return Ok("beta".to_string());
     }
 
-    let bare = v.strip_prefix('v').unwrap_or(v);
-
-    // Latest stable / lts aliases
-    if bare.is_empty() || matches!(bare, "stable" | "lts") {
+    // Latest stable / lts / current aliases
+    if v.is_empty() || matches!(v, "stable" | "lts" | "current") {
         return releases
             .iter()
             .find(|r| !r.prerelease)
@@ -126,7 +185,7 @@ pub fn resolve_from(version_str: &str, releases: &[GhRelease]) -> Result<String>
     }
 
     // Strip trailing `.x` / `.X`
-    let prefix = bare.trim_end_matches(".x").trim_end_matches(".X");
+    let prefix = v.trim_end_matches(".x").trim_end_matches(".X");
 
     // Prefix match: e.g. "1.87" matches "1.87.0"
     let needle = format!("{prefix}.");
@@ -216,8 +275,8 @@ mod tests {
     }
 
     #[test]
-    fn resolve_prefix_with_v() {
-        assert_eq!(resolve_from("v1.86", &stable_releases()).unwrap(), "1.86.1");
+    fn resolve_prefix_with_v_rejected() {
+        assert!(resolve_from("v1.86", &stable_releases()).is_err());
     }
 
     #[test]
@@ -237,11 +296,53 @@ mod tests {
     }
 
     #[test]
-    fn resolve_exact_version_with_v() {
+    fn resolve_exact_version_with_v_rejected() {
+        assert!(resolve_from("v1.87.0", &stable_releases()).is_err());
+    }
+
+    #[test]
+    fn resolve_current_returns_stable() {
         assert_eq!(
-            resolve_from("v1.87.0", &stable_releases()).unwrap(),
+            resolve_from("current", &stable_releases()).unwrap(),
             "1.87.0"
         );
+    }
+
+    #[test]
+    fn parse_version_sha_nightly() {
+        let manifest = r#"[pkg.rust]
+version = "1.90.0-nightly (abc1234de 2025-02-01)"
+"#;
+        let result = parse_version_sha_from_manifest(manifest).unwrap();
+        assert_eq!(result.0, "1.90.0-nightly");
+        assert_eq!(result.1, "abc1234de");
+    }
+
+    #[test]
+    fn parse_version_sha_beta() {
+        // Mirrors real manifest layout: [pkg.cargo] appears first, [pkg.rust] follows.
+        let manifest = r#"[pkg.cargo]
+version = "0.97.0-beta.3 (bfa14ef47 2025-01-28)"
+
+[pkg.rust]
+version = "1.88.0-beta.3 (def5678ab 2025-01-30)"
+"#;
+        let result = parse_version_sha_from_manifest(manifest).unwrap();
+        assert_eq!(result.0, "1.88.0-beta.3");
+        assert_eq!(result.1, "def5678ab");
+    }
+
+    #[test]
+    fn parse_version_sha_missing() {
+        assert!(parse_version_sha_from_manifest("date = \"2025-01-30\"").is_none());
+    }
+
+    #[test]
+    fn parse_version_sha_ignores_pkg_cargo_section() {
+        // A manifest where [pkg.rust] is absent must return None even when
+        // [pkg.cargo] has a valid version line — the fix for the beta bug.
+        let manifest = "[pkg.cargo]\nversion = \"0.97.0-beta.9 (bfa14ef47 2026-05-15)\"\n";
+        assert!(parse_version_sha_from_manifest(manifest).is_none());
     }
 
     #[test]

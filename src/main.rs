@@ -65,8 +65,13 @@ enum Commands {
         /// Version to remove (omit for interactive selection)
         version: Option<String>,
     },
-    /// Remove all cached versions except the active one
-    Prune,
+    /// Remove all cached versions except the currently active one.
+    /// Use `--force` to also remove the active version.
+    Prune {
+        /// Also remove the currently active version.
+        #[arg(long)]
+        force: bool,
+    },
     /// Show path to the rustc binary for a cached version
     Which {
         /// Version to look up
@@ -89,7 +94,11 @@ enum Commands {
     /// Update r to the latest available version
     Update,
     /// Uninstall r completely (removes cached versions, prefix, and the r binary)
-    Uninstall,
+    Uninstall {
+        /// Skip the confirmation prompt.
+        #[arg(short, long)]
+        yes: bool,
+    },
     /// Install a Rust toolchain (e.g. 1.87.0, stable, beta, nightly)
     #[command(external_subcommand)]
     Version(Vec<String>),
@@ -103,7 +112,7 @@ fn main() -> Result<()> {
         Some(Commands::Ls) => list::list_local()?,
         Some(Commands::LsRemote) => releases::list_remote()?,
         Some(Commands::Remove { version }) => install::remove_version(version)?,
-        Some(Commands::Prune) => cache::prune()?,
+        Some(Commands::Prune { force }) => cache::prune(force)?,
         Some(Commands::Which { version }) => {
             let path = cache::which(&version)?;
             println!("{}", path.display());
@@ -112,7 +121,7 @@ fn main() -> Result<()> {
         Some(Commands::Fetch { version }) => install::download_only(&version)?,
         Some(Commands::Info) => diagnostics::info(),
         Some(Commands::Update) => install::update_self()?,
-        Some(Commands::Uninstall) => install::uninstall_self()?,
+        Some(Commands::Uninstall { yes }) => install::uninstall_self(yes)?,
         Some(Commands::Version(args)) => install::install(&args[0])?,
     }
 
